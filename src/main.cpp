@@ -1,17 +1,36 @@
+/**************************************88
+ * Author: Micah Janzen
+ * Date: 2/3/2022
+ * Program Description: This program utilized the BMI160 6 axis accelerometer and gyroscope sensor to 
+ * control 2 leds. LEDs are turned on when acceleration is negative and two pushbuttons act as turn signals which
+ * make the LEDs blink 
+ * Included library(driver code for BMI160): https://github.com/bastian2001/BMI160-Arduino-1
+*/
 #include <Arduino.h>
 
 #include <BMI160-Arduino/BMI160.h>
 #include <BMI160-Arduino/BMI160Gen.h>
 #include <BMI160-Arduino/CurieIMU.h>
+#include <arduino-timer.h>
+
+const int g_range=2;
 
 /** Functions **/
+//takes raw gyro sensor values and maps to +-250 values
 float convertRawGyro(int gRaw);
+//takes raw acceleration data and maps m/s^2 values
 float convertRawAcc(int aRaw);
+//returns the magnitude of the x and y component of acceleration
 int get_xy_magn(int x, int y);
 //takes in array, then returns the average
 int get_ma(int* arr);
 //takes in arr, shifts each value "left" discarding [0] index, and putting new val at index 20
 void update_arr(int* arr,int new_val);
+//
+bool timer_funct();
+
+
+auto timer = timer_create_default();
 
 /** Global Vars **/
 //defines the arr size of the moving avg for acc and rot if needed
@@ -19,6 +38,8 @@ const int avg_arr_size=5;
 //used to keep track of time similiar to timer
 int long last_millis=0;
 int long curr_millis=0;
+//accel info
+float accel_sum,prev_accel_sum=0;
 
 
 //used to keep track of moving average for X acceleration
@@ -53,7 +74,10 @@ bool braking=false;
 int velocityX=0;
 int velocityY=0;
 
-
+/*
+Setup Description: Initialize Serial, set 2 leds as outuput and take pushbutton as input.
+Setup BMI160 sensor, using SPI communication between sensor and arduino, and calibrate sensor.
+*/
 void setup() {
   Serial.begin(9600); // initialize Serial communication
   while (!Serial);    // wait for the serial port to open
@@ -78,18 +102,29 @@ void setup() {
   BMI160.setAccelOffsetEnabled(true);
   BMI160.autoCalibrateXAccelOffset(0);
   BMI160.autoCalibrateYAccelOffset(0);
-  BMI160.autoCalibrateZAccelOffset(1);
+  //BMI160.autoCalibrateZAccelOffset(1);
   //BMI160.setAccelRate(8);
 
  // BMI160.setAccelRate(32000);
   BMI160.interruptsEnabled(CURIE_IMU_MOTION);
-  BMI160.setDetectionThreshold(CURIE_IMU_MOTION,2);
-  Serial.println(BMI160.getDetectionThreshold(CURIE_IMU_MOTION));
+  //BMI160.setDetectionThreshold(CURIE_IMU_MOTION,2);
+  Serial.println(BMI160.getFullScaleAccelRange());
+  //Serial.println(BMI160.getDetectionThreshold(CURIE_IMU_MOTION));
   Serial.println("Initializing IMU device...done.");
+  timer.every(1000,timer_funct);
 }
 
+/*
+Loop Description: Reads in button values as well as the acceleration+gyroscope raw values from sensor.
+if button was pressed, toggle blinking with respective led(left or right). If there is negative acceleration
+Turn on led that isn't blinking and let the led that is blinking continue to blink.
+*/
 void loop() {
-  int accX_ma,accY_ma,accZ_ma,xy_acc, rotX_ma, rotY_ma, rotZ_ma;
+  
+  float accX,accY,accX_ma,accY_ma,accZ_ma,xy_acc, rotX_ma, rotY_ma, rotZ_ma;
+  
+  timer.tick();
+ 
 
   //read button values
   btn_left_val=digitalRead(btn_left_pin);
@@ -130,80 +165,38 @@ void loop() {
     digitalWrite(led_left_pin,(led_left_val?255:0));
     led_left_val=(!led_left_val);
   }
-  /*
-  //timer used to turn off turn signal after 5 seconds, doesnt quite work atm
-  if((curr_millis-last_millis>5000) && (blink_right||blink_left)){ //if blinking turn signal is on for certain time, reset to default
-    Serial.println("Turn signal reset");
-    blink_left=false;
-    blink_right=false;
-    last_millis=curr_millis;
-  }
-  */
 
 
   //add new val to arr of ma for X Y and Z arrs
-  update_arr(acc_maX, (convertRawAcc(BMI160.getAccelerationX())) );
-  accX_ma=get_ma(acc_maX);
+  //update_arr(acc_maX, (convertRawAcc(BMI160.getAccelerationX())) );
+  accX=convertRawAcc(BMI160.getAccelerationX());
+  if(accX>.05 || accX<-.05){
+    Serial.print("adding \t");
+    Serial.println(accX);
+    
+    accel_sum+=accX;
+    //Serial.println(accel_sum);
+  }
   //accX_ma=convertRawAcc(BMI160.getAccelerationX());
 
-  update_arr(acc_maY, (convertRawAcc(BMI160.getAccelerationY())) );
-  accY_ma=get_ma(acc_maY);
-  //accY_ma=convertRawAcc(BMI160.getAccelerationY());
 
-  update_arr(acc_maZ, (convertRawAcc(BMI160.getAccelerationZ())) );
-  accZ_ma=get_ma(acc_maZ);
-  //accZ_ma=convertRawAcc(BMI160.getAccelerationZ());
+ 
 
-
-  xy_acc=get_xy_magn(accX_ma,accY_ma);
-
-  update_arr(rot_maX, (convertRawGyro(BMI160.getRotationX())) );
-  rotX_ma=get_ma(rot_maX);
-  
-  update_arr(rot_maY, (convertRawGyro(BMI160.getRotationY())) );
-  rotY_ma=get_ma(rot_maY);
-
-  update_arr(rot_maZ, (convertRawGyro(BMI160.getRotationZ())) );
-  rotZ_ma=get_ma(rot_maZ);
-
-  //if val is not from noise and is actual movement, then add to vel
-  //idea doens't really work atm
-  if(accX_ma>1 || accX_ma<-1){
-    velocityX+=accX_ma;
-    }
-  if(accY_ma>1 || accY_ma<-1){
-      velocityY+=accY_ma;
-    }
-
-    //if deccelerating, and not noise brakes on
-    if(xy_acc<-1){
-      if((blink_left==false)&& (blink_right==false)){
-        digitalWrite(led_left_pin,HIGH);
-        digitalWrite(led_right_pin,HIGH);
-      }
-      //if blinking, continue to blink but turn other led on as well
-      else if(blink_left)
-        digitalWrite(led_right_pin, HIGH);
-      else if(blink_right)
-        digitalWrite(led_left_pin,HIGH);
-      //hold brake light for a bit afterwards(replace with timer eventually)
-      delay(200);
-      
-    }
+    
  
 
 //below if statement doesn't ever return true even if sensor is moved quickly.
 //(BMI160.motionDetected(X_AXIS,POSITIVE)) || (BMI160.motionDetected(Y_AXIS,POSITIVE))
 //print acceleration values
-  if(true){
-  Serial.print("acc:\t");
-  Serial.print(accX_ma);
-  Serial.print("\t");
-  Serial.print(accY_ma);
-  Serial.print("\t");
-  Serial.print(xy_acc);
-  
-  Serial.println();
+  if(false){
+    Serial.print("acc:\t");
+    Serial.print(convertRawAcc(BMI160.getAccelerationX()));
+    Serial.print("\t");
+    //Serial.print(convertRawAcc(BMI160.getAccelerationY()));
+    Serial.println(accel_sum);
+    //Serial.print(xy_acc);
+    
+    Serial.println();
   }
   //print test velocity values
   if(false){
@@ -232,7 +225,7 @@ void loop() {
     Serial.print(btn_left_val);
     Serial.println();
   }
-  delay(150);
+  delay(1);
 }
 
 float convertRawGyro(int gRaw) {
@@ -251,9 +244,8 @@ float convertRawGyro(int gRaw) {
  * +/- 16g          | 1024 LSB/mg
  * */
 float convertRawAcc(int aRaw){
-  //maybe test that this is m/s^2 by using video and tracking sensor similar to physics lab, and compare results
-  //9.82 for grav, 1000 for mg, 8192 for +-2g.
-  return (aRaw*9.82*(10))/8192;
+  
+  return (aRaw*9.81)/16384;
 }
 
 int get_ma(int* arr){
@@ -285,4 +277,16 @@ int get_xy_magn(int x, int y){
   result= ((x<0)^(y<0)) ?(result*(-1)):(result);
   return result;
 
+}
+
+//function called when timer val reached
+//used to get sum of acceleration measurments, reset the sum over time period, and update value
+bool timer_funct(){
+  if(false)
+    Serial.print("summed accel: \t");
+    Serial.println(accel_sum);
+  prev_accel_sum=accel_sum;
+  accel_sum=0;
+//return true to conitnue counter
+  return true;
 }
