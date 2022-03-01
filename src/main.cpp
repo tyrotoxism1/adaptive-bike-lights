@@ -13,9 +13,8 @@
 #include <BMI160-Arduino/CurieIMU.h>
 #include <arduino-timer.h>
 
-const int g_range=2;
 
-/** Functions **/
+/********************* Functions **********************8**/
 //takes raw gyro sensor values and maps to +-250 values
 float convertRawGyro(int gRaw);
 //takes raw acceleration data and maps m/s^2 values
@@ -26,27 +25,29 @@ int get_xy_magn(int x, int y);
 int get_ma(int* arr);
 //takes in arr, shifts each value "left" discarding [0] index, and putting new val at index 20
 void update_arr(int* arr,int new_val);
-//
+//function handlers for timers
 bool brake_timer_handler();
 bool calc_vel();
 bool turn_timer_handler();
 
 
-
+//create timers and bind fucntion handlers to call when timer is up
 auto brake_timer = timer_create_default();
 auto sum_acc_timer=timer_create_default();
 auto turn_timer=timer_create_default();
 
 
-/** Global Vars **/
-//
-int toggle_rate=500; //start out at 1 second toggle rate 
+/*************** Global Vars ***********************/
+//amount of time to turn on and off leds when flashing
+int toggle_rate=500; 
 //used to keep track of time similiar to timer
-int long last_millis=0;
-int long curr_millis=0;
-//speed(only in x direction atm) info. used to sum the accelerometer readings over the period of 1 sec
+int long previous_time=0;
+int long current_time=0;
+int long elapsed_time=0;
+//speed(only in x direction atm) info. holds  sum of the accelerometer readings over the period of 1 sec
 float velocity,prev_velocity=0;
-
+//dispalcement aimed to keep track of total ditance traveled
+int displacement=0;
 
 //4 total signals for LEDs, left dim ligh, left bright light, and the same for the right
 //LEFT DIM: D5
@@ -73,13 +74,11 @@ bool right_btn_val=false;
 bool turn_right=false;
 
 
-
-//dispalcement aimed to keep track of total ditance traveled
-int displacement=0;
 //var to try and adjust for error at resting place
 const float err_adj=.06;
 float rotX=0;
 float rot_sum_x=0;
+float gyro_angleX;
 
 /*
 Setup Description: Initialize Serial, set 4 led signals as outuput and take pushbutton as input.
@@ -107,8 +106,9 @@ void setup() {
   Serial.println(dev_id, HEX);
 
   // Set the accelerometer range to 250 degrees/second
-  BMI160.setGyroRange(3);
+  //BMI160.setGyroRange(3);
   BMI160.initialize();
+  BMI160.setFullScaleGyroRange(3);
   BMI160.setAccelOffsetEnabled(true);
   BMI160.setGyroOffsetEnabled(true);
   BMI160.autoCalibrateGyroOffset();
@@ -138,8 +138,6 @@ Turn on led that isn't blinking and let the led that is blinking continue to bli
 void loop() {
   
   float accX,accY, accZ;
-  
-  
   brake_timer.tick();
   sum_acc_timer.tick();
   turn_timer.tick();
@@ -148,6 +146,10 @@ void loop() {
   //read button values( ACTIVE LOW)
   left_btn_val=digitalRead(left_btn_pin);
   right_btn_val=digitalRead(right_btn_pin);
+
+/*****************
+ * BUTTON POLLING
+ * ***************/
 
 //if left button found true, swap turn signal val for left, essentially toggling the turn signal
   if(left_btn_val==0){
@@ -168,38 +170,52 @@ void loop() {
   }
 
 
-  //add new val to arr of ma for X Y and Z arrs
-  //update_arr(acc_maX, (convertRawAcc(BMI160.getAccelerationX())) );
-  rotX=convertRawGyro(BMI160.getRotationX());
-  if((rotX>15) || (rotX<-15)){
-    rot_sum_x+=rotX;
+/********************************************
+ * ACC + ROT DATA RETREIVAL & MANIPULATION
+ * ******************************************/
+//get rotation for X and acceleration of each axis
+  rotX=convertRawGyro(BMI160.getRotationY());
+  //try to not account for small noise movements
+  if(rotX<.3 && rotX>-.3){
+    rotX=0;
   }
-  //Serial.println(rot_sum_x);
-  //get ratio of read value against the max value.
-  float rot_ratio=rotX/250;
-  //based on this ratio, subtract this amount of gravity(9.81) from the read x value
-  float grav_accel_x=rot_ratio*9.81;
-  //Serial.println(grav_accel_x);
-
   accX=convertRawAcc(BMI160.getAccelerationX());
+  accY=convertRawAcc(BMI160.getAccelerationY());
+  accZ=convertRawAcc(BMI160.getAccelerationZ());
+
+
+//https://howtomechatronics.com/tutorials/arduino/arduino-and-mpu6050-accelerometer-and-gyroscope-tutorial/
+//good amount of these calculations are referenecing this project linked above
+  previous_time=current_time;
+  current_time=millis();
+  elapsed_time=(current_time-prev_velocity)/1000;
+  gyro_angleX+=rotX*elapsed_time;
+  //Serial.println(gyro_angleX);
+  
+  
+  
+
+  //adjusts acceleration data error
   if(accX>1){
     accX+=.6;
   }
   else if(accX<-1){
     accX+=.7;
   }
-  //subtract the ratio of rotation to acceleration from gravity from x acceleration to eliminate it
-  accX-=grav_accel_x;
   
-  accY=convertRawAcc(BMI160.getAccelerationY());
-  accZ=convertRawAcc(BMI160.getAccelerationZ());
+
+ //finds the angle from the x axis(i think essentially like the angle around the y axis), and converts to degrees
   float accX_angle=atan(-1*accX/(sqrt(pow(accY,2)+pow(accZ,2))))*(180/PI);
+  
+  //float pitch=.96*gyro_angleX+.04*accX_angle;
+  //Serial.println(accX_angle);
   //Serial.println(accX_angle);
   //rotX=convertRawGyro(BMI160.getRotationX());
   float summed_acc=accX+accY+accZ;
+  //takes the angle from x axis, converting the angle to radians, then multiplies by gravity component affecting x axis
   float grav_x_offset=sin(accX_angle*(PI/180))*9.81;
   //Serial.println(grav_x_offset);
-  //Serial.println(accX+grav_x_offset);
+  Serial.println(accX+grav_x_offset);
   //Serial.println();
   if(accX>.10 || accX<-.10){
     if(false){
@@ -212,8 +228,10 @@ void loop() {
   
 
 
+/****************************************
+ * TEST PRINTING
+ * **************************************/
 
-//print values
   if(false){
     Serial.print("acc:\t");
     Serial.print(accX);
@@ -246,10 +264,10 @@ void loop() {
     // Serial.print("Z:\t");
     // Serial.println(convertRawGyro(BMI160.getRotationZ()));
   }
-  
-  
-  delay(10);
+  delay(30);
 }
+
+
 
 float convertRawGyro(int gRaw) {
   // since we are using 250 degrees/seconds range
@@ -260,6 +278,7 @@ float convertRawGyro(int gRaw) {
 
   return g;
 }
+
 /*
 * +/- 2g           | 8192 LSB/mg
  * +/- 4g           | 4096 LSB/mg
@@ -286,11 +305,9 @@ int get_xy_magn(int x, int y){
 //used to get sum of acceleration measurments, reset the sum over time period, and update value
 //!!NOTE add way to track previous 3-5 velocities to make sure it is truly negative or truly positive and not a one off
 bool brake_timer_handler(){
-  Serial.println("in brake timer handler");
   //true if velocity is neg,false if vel is pos
   bool toggle_led=false;
-  Serial.println(toggle_rate);
-  //if vel was previously braking,
+  //true if the toggle_rate reaches max falsh rate, false otherwise
   bool full_brake=false;
   
   //if velocity is decreasing, toggle leds and increase blink rate
@@ -361,7 +378,7 @@ bool brake_timer_handler(){
   //schedule next time to call and update leds
   sum_acc_timer.in(toggle_rate,brake_timer_handler);
   
-//return true to conitnue counter
+//return false to stop timer, but since we created a new timer "time" above, it will be called in toggle rate amt of time
   return false;
 }
 
