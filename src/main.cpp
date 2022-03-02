@@ -13,7 +13,7 @@
 #include <BMI160-Arduino/CurieIMU.h>
 #include <arduino-timer.h>
 
-const int queue_size=5;
+
 
 /********************* Functions **********************8**/
 //takes raw gyro sensor values and maps to +-250 values
@@ -51,19 +51,13 @@ float velocity,prev_velocity=0;
 //dispalcement aimed to keep track of total ditance traveled
 int displacement=0;
 
-//4 total signals for LEDs, left dim ligh, left bright light, and the same for the right
-//LEFT DIM: D5
-int left_dim_pin=5;
-bool left_dim_val=false;
-//LEFT BRIGHT: D6
-int left_bright_pin=6;
-bool left_bright_val=false;
-//RIGHT DIM: D7
-int right_dim_pin=7;
-bool right_dim_val=false;
-//RIGHT BRIGHT: D8
-int right_bright_pin=8;
-bool right_bright_val=false;
+//2 leds, brightness controlled with pwm and the val
+//LEFT LED: D5
+int left_led_pin=5;
+//RIGHT LED: D6
+int right_led_pin=6;
+int led_brightness=0;
+
 
 //2 pushbuttons to trigger turn signal
 //LEFT BUTTON: D9
@@ -74,6 +68,7 @@ bool turn_left=false;
 int right_btn_pin=10;
 bool right_btn_val=false;
 bool turn_right=false;
+int brightness;
 
 
 
@@ -90,13 +85,9 @@ Setup BMI160 sensor, using SPI communication between sensor and arduino, and cal
 void setup() {
   Serial.begin(9600); // initialize Serial communication
   while (!Serial);    // wait for the serial port to open
-  //set btn as input, leds as ouptu
 
-
-  pinMode(left_dim_pin, OUTPUT);
-  pinMode(left_bright_pin, OUTPUT);
-  pinMode(right_dim_pin, OUTPUT);
-  pinMode(right_bright_pin, OUTPUT);
+  pinMode(left_led_pin, OUTPUT);
+  pinMode(right_led_pin, OUTPUT);
   pinMode(left_btn_pin, INPUT_PULLUP);
   pinMode(right_btn_pin, INPUT_PULLUP);
 
@@ -160,18 +151,18 @@ void loop() {
   if(left_btn_val==0){
     turn_left=(!turn_left);
     if(turn_right==true){
-      digitalWrite(right_dim_pin,LOW);
+      analogWrite(right_led_pin,0);
       turn_right=false;
     }
-    digitalWrite(left_dim_pin,LOW);
+    analogWrite(left_led_pin,0);
   }
   if(right_btn_val==0){
     turn_right=(!turn_right);
     if(turn_left==true){
-      digitalWrite(left_dim_pin,LOW);
+      digitalWrite(left_led_pin,0);
       turn_left=false;
     }
-    digitalWrite(right_dim_pin,LOW); 
+    digitalWrite(right_led_pin,0); 
   }
 
 
@@ -211,7 +202,7 @@ void loop() {
   float acc_magn=(sqrt(pow(accX,2)+pow(accY,2)+pow(accZ,2)))-9.8;
 
   if(acc_magn>.2 || acc_magn<-.2){
-    Serial.println(acc_magn);
+    //Serial.println(acc_magn);
   }
 
 
@@ -242,7 +233,7 @@ void loop() {
 
 
   //if acceleration is not noise, sum over period to get velocity
-  if(acc_magn>.1 || acc_magn<-.1){
+  if(accX>.1 || accX<-.1){
     if(false){
       Serial.print("adding \t");
       Serial.println(acc_magn);
@@ -252,14 +243,14 @@ void loop() {
       acc_magn*=-1;
     }
 
-    velocity+=(acc_magn);
+    velocity+=(accX);
     //Serial.println(velocity);
   }
   
 /****************************************
  * TEST PRINTING
  * **************************************/
-if(true){
+if(false){
   Serial.println(velocity);
 //print val for the angle from x axis
   //Serial.println(accX_angle);
@@ -268,9 +259,9 @@ if(true){
 
 }
 
-if(false){
+if(true){
     Serial.print("acc:\t");
-    Serial.print(accZ);
+    Serial.print(accX);
   // Serial.println(summed_acc);
   //Serial.print("\t");
     //Serial.print(convertRawAcc(BMI160.getAccelerationY()));
@@ -300,7 +291,7 @@ if(false){
     // Serial.print("Z:\t");
     // Serial.println(convertRawGyro(BMI160.getRotationZ()));
   }
-  delay(300);
+  delay(150);
 }
 
 
@@ -345,6 +336,7 @@ int get_xy_magn(int x, int y){
 //used to get sum of acceleration measurments, reset the sum over time period, and update value
 //!!NOTE add way to track previous 3-5 velocities to make sure it is truly negative or truly positive and not a one off
 bool brake_timer_handler(){
+  
   //true if velocity is neg,false if vel is pos
   bool toggle_led=false;
   //true if the toggle_rate reaches max falsh rate, false otherwise
@@ -354,65 +346,80 @@ bool brake_timer_handler(){
   if(velocity<-3){
     toggle_led=true;
     //if toggle rate is fast enough, just brake and dont descrease value anymore
-    if(toggle_rate<=100){
+    if(toggle_rate<=30){
       full_brake=true;
+      led_brightness=255;
     }
     else{
       full_brake=false;
       toggle_rate-=50;
+      led_brightness+=20;
     }
   }
+  
   //else if moving forward, pos vel, turn off blink and all leds. And reset blink rate
-  else if(velocity>3){
+  else if(velocity>1){
     toggle_led=false;
     full_brake=false;
-    toggle_rate=700;
+    //led_brightness=100;
+    toggle_rate=500;
     //add check for if turn signal is on for right or left
     //if left is blining, leave dim alone
     if(turn_left){
-      digitalWrite(left_bright_pin,LOW);
-      digitalWrite(right_dim_pin,LOW);
-      digitalWrite(right_bright_pin,LOW);
+      analogWrite(right_led_pin,LOW);
     }
     //else if right is blinking, leave right dim alone
     else if(turn_right){
-      digitalWrite(left_dim_pin,LOW);
-      digitalWrite(left_bright_pin,LOW);
-      digitalWrite(right_bright_pin,LOW);
+      analogWrite(left_led_pin,LOW);
     }
     //else turn all leds off
     else{
-      digitalWrite(left_dim_pin,LOW);
-      digitalWrite(left_bright_pin,LOW);
-      digitalWrite(right_dim_pin,LOW);
-      digitalWrite(right_bright_pin,LOW);
+      analogWrite(left_led_pin,LOW);
+      analogWrite(right_led_pin,LOW);
     }
   }
 
-// add check here for previous velocities and stuff
   if(toggle_led){
     //again check for turn signals, if either is on, leave respective light along
-    if(turn_left)
-      digitalWrite(right_dim_pin,!digitalRead(right_dim_pin));
-    else if(turn_right)
-      digitalWrite(left_dim_pin,!digitalRead(left_dim_pin));
+    if(turn_left){
+      if(brightness!=0)
+        brightness=0;
+      else
+        brightness=led_brightness;
+      analogWrite(right_led_pin,brightness);
+    }
+    else if(turn_right){
+      if(brightness!=0)
+        brightness=0;
+      else
+        brightness=led_brightness;
+      analogWrite(left_led_pin,brightness);
+    }
     else{
-      digitalWrite(left_dim_pin,!digitalRead(left_dim_pin));
-      digitalWrite(right_dim_pin,!digitalRead(right_dim_pin));
+      if(brightness==0)
+        brightness=led_brightness;
+      else
+        brightness=0;
+      //analogWrite(left_led_pin,LOW);
+      analogWrite(left_led_pin,brightness);
+      analogWrite(right_led_pin, brightness);
     }
     
   }
   if(full_brake){
+    led_brightness=0;
+    brightness=0;
     //add check for if turn signal is on, if so then continue blinking
     if(turn_left)
-      digitalWrite(right_bright_pin,HIGH);
+      analogWrite(right_led_pin,255);
     else if(turn_right)
-      digitalWrite(left_bright_pin,HIGH);
+      analogWrite(left_led_pin,255);
     else{
-      digitalWrite(left_bright_pin,HIGH);
-      digitalWrite(right_bright_pin,HIGH);
+      analogWrite(left_led_pin,255);
+      analogWrite(right_led_pin,255);
     }
   }
+  
   
   //schedule next time to call and update leds
   sum_acc_timer.in(toggle_rate,brake_timer_handler);
@@ -433,10 +440,10 @@ bool calc_vel(){
 bool turn_timer_handler(){
   //if turn left or turn right are true, then toggle respective led
   if(turn_left){
-    digitalWrite(left_dim_pin,!digitalRead(left_dim_pin));
+    digitalWrite(left_led_pin,!digitalRead(left_led_pin));
   }
   else if(turn_right){
-    digitalWrite(right_dim_pin,!digitalRead(right_dim_pin));
+    digitalWrite(right_led_pin,!digitalRead(right_led_pin));
   }
 
   return true;
