@@ -13,6 +13,7 @@
 #include <BMI160-Arduino/CurieIMU.h>
 #include <arduino-timer.h>
 
+const int queue_size=5;
 
 /********************* Functions **********************8**/
 //takes raw gyro sensor values and maps to +-250 values
@@ -29,6 +30,7 @@ void update_arr(int* arr,int new_val);
 bool brake_timer_handler();
 bool calc_vel();
 bool turn_timer_handler();
+
 
 
 //create timers and bind fucntion handlers to call when timer is up
@@ -72,6 +74,7 @@ bool turn_left=false;
 int right_btn_pin=10;
 bool right_btn_val=false;
 bool turn_right=false;
+
 
 
 //var to try and adjust for error at resting place
@@ -141,6 +144,8 @@ void loop() {
   brake_timer.tick();
   sum_acc_timer.tick();
   turn_timer.tick();
+
+  digitalWrite(7,!digitalRead(7));
  
 
   //read button values( ACTIVE LOW)
@@ -182,6 +187,32 @@ void loop() {
   accX=convertRawAcc(BMI160.getAccelerationX());
   accY=convertRawAcc(BMI160.getAccelerationY());
   accZ=convertRawAcc(BMI160.getAccelerationZ());
+   //adjusts X acceleration data error
+  if(accX>.1){
+    accX+=.6;
+  }
+  else if(accX<-.1){
+    accX+=.7;
+  }
+  //adjusts Y acceleration data error
+   if(accY>.1){
+    accY+=.25;
+  }
+  else if(accY<-.1){
+    accY+=.35;
+  }
+  //adjust Z acceleratoin data error
+  if(accZ>.1){
+    accZ+=.3;
+  }
+  else if(accZ<-.1){
+    accZ+=.5;
+  }
+  float acc_magn=(sqrt(pow(accX,2)+pow(accY,2)+pow(accZ,2)))-9.8;
+
+  if(acc_magn>.2 || acc_magn<-.2){
+    Serial.println(acc_magn);
+  }
 
 
 //https://howtomechatronics.com/tutorials/arduino/arduino-and-mpu6050-accelerometer-and-gyroscope-tutorial/
@@ -195,13 +226,7 @@ void loop() {
   
   
 
-  //adjusts acceleration data error
-  if(accX>1){
-    accX+=.6;
-  }
-  else if(accX<-1){
-    accX+=.7;
-  }
+ 
   
 
  //finds the angle from the x axis(i think essentially like the angle around the y axis), and converts to degrees
@@ -209,32 +234,43 @@ void loop() {
   
   //float pitch=.96*gyro_angleX+.04*accX_angle;
   //Serial.println(accX_angle);
-  //Serial.println(accX_angle);
   //rotX=convertRawGyro(BMI160.getRotationX());
-  float summed_acc=accX+accY+accZ;
   //takes the angle from x axis, converting the angle to radians, then multiplies by gravity component affecting x axis
   float grav_x_offset=sin(accX_angle*(PI/180))*9.81;
   //Serial.println(grav_x_offset);
-  Serial.println(accX+grav_x_offset);
-  //Serial.println();
-  if(accX>.10 || accX<-.10){
+
+
+
+  //if acceleration is not noise, sum over period to get velocity
+  if(acc_magn>.1 || acc_magn<-.1){
     if(false){
       Serial.print("adding \t");
-      Serial.println(accX);
+      Serial.println(acc_magn);
     }
-    velocity+=(accX+err_adj);
+    //since acc_magn is magninuted, we need to get if accel is neg or not
+    if(accX<-.05){
+      acc_magn*=-1;
+    }
+
+    velocity+=(acc_magn);
     //Serial.println(velocity);
   }
   
-
-
 /****************************************
  * TEST PRINTING
  * **************************************/
+if(true){
+  Serial.println(velocity);
+//print val for the angle from x axis
+  //Serial.println(accX_angle);
+//print val for acceleration with the gravity offset added
+  //Serial.println(accX+grav_x_offset);
 
-  if(false){
+}
+
+if(false){
     Serial.print("acc:\t");
-    Serial.print(accX);
+    Serial.print(accZ);
   // Serial.println(summed_acc);
   //Serial.print("\t");
     //Serial.print(convertRawAcc(BMI160.getAccelerationY()));
@@ -264,7 +300,7 @@ void loop() {
     // Serial.print("Z:\t");
     // Serial.println(convertRawGyro(BMI160.getRotationZ()));
   }
-  delay(30);
+  delay(300);
 }
 
 
@@ -301,6 +337,10 @@ int get_xy_magn(int x, int y){
 
 }
 
+
+//NOTE: cant truly get velocity, so to determine braking just use acceleration and decceleration
+//for turning off the turn signal after turn, just detect forward motion and then set a timer
+
 //function called when brake_timer val reached
 //used to get sum of acceleration measurments, reset the sum over time period, and update value
 //!!NOTE add way to track previous 3-5 velocities to make sure it is truly negative or truly positive and not a one off
@@ -321,7 +361,6 @@ bool brake_timer_handler(){
       full_brake=false;
       toggle_rate-=50;
     }
-    
   }
   //else if moving forward, pos vel, turn off blink and all leds. And reset blink rate
   else if(velocity>3){
@@ -402,3 +441,5 @@ bool turn_timer_handler(){
 
   return true;
 }
+
+
