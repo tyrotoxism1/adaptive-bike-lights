@@ -1,11 +1,11 @@
-/**************************************88
+/************************************************************************
  * Author: Micah Janzen
  * Date: 2/3/2022
  * Program Description: This program utilized the BMI160 6 axis accelerometer and gyroscope sensor to 
  * control 2 leds. LEDs are turned on when acceleration is negative and two pushbuttons act as turn signals which
  * make the LEDs blink 
  * Included library(driver code for BMI160): https://github.com/bastian2001/BMI160-Arduino-1
-*/
+***********************************************************************/
 #include <Arduino.h>
 
 #include <BMI160-Arduino/BMI160.h>
@@ -13,9 +13,9 @@
 #include <BMI160-Arduino/CurieIMU.h>
 #include <arduino-timer.h>
 
-const int g_range=2;
 
-/** Functions **/
+
+/********************* Functions **********************8**/
 //takes raw gyro sensor values and maps to +-250 values
 float convertRawGyro(int gRaw);
 //takes raw acceleration data and maps m/s^2 values
@@ -26,92 +26,106 @@ int get_xy_magn(int x, int y);
 int get_ma(int* arr);
 //takes in arr, shifts each value "left" discarding [0] index, and putting new val at index 20
 void update_arr(int* arr,int new_val);
-//
-bool timer_funct();
+//function handlers for timers
+bool brake_timer_handler();
+bool calc_vel();
+bool turn_timer_handler();
+bool turn_signal_off_handler();
 
 
-auto timer = timer_create_default();
 
-/** Global Vars **/
-//defines the arr size of the moving avg for acc and rot if needed
-const int avg_arr_size=5;
+//create timers and bind fucntion handlers to call when timer is up
+auto brake_timer = timer_create_default();
+auto sum_acc_timer=timer_create_default();
+auto turn_timer=timer_create_default();
+auto turn_signal_off=timer_create_default();
+
+
+/*************** Global Vars ***********************/
+//amount of time to turn on and off leds when flashing
+int toggle_rate=400; 
 //used to keep track of time similiar to timer
-int long last_millis=0;
-int long curr_millis=0;
-//accel info
-float accel_sum,prev_accel_sum=0;
+int long previous_time=0;
+int long current_time=0;
+int long elapsed_time=0;
+//speed(only in x direction atm) info. holds  sum of the accelerometer readings over the period of 1 sec
+float velocity,prev_velocity=0;
+//dispalcement aimed to keep track of total ditance traveled
+int displacement=0;
+
+//2 leds, brightness controlled with pwm and the val
+//LEFT LED: D5
+int left_led_pin=5;
+//RIGHT LED: D6
+int right_led_pin=6;
+int led_brightness=0;
 
 
-//used to keep track of moving average for X acceleration
-int acc_maX[avg_arr_size]={0};
-int acc_maY[avg_arr_size]={0};
-int acc_maZ[avg_arr_size]={0};
-//moving average of each axis of rotation
-int rot_maX[avg_arr_size]={0};
-int rot_maY[avg_arr_size]={0};
-int rot_maZ[avg_arr_size]={0};
-//left push button signal(active low)
-int const btn_left_pin=11;
-bool btn_left_val=true;
-//right push button signal(active low)
-int const btn_right_pin=12;
-bool btn_right_val=true;
-//left led signal
-int const led_left_pin=5;
-bool led_left_val=false;
-bool blink_left=false;
-//Right led signal
-int const led_right_pin=6;
-bool led_right_val=false;
-bool blink_right=false;
-//vars to attempt to keep track of general motion
-bool moving_forward=false;
-bool braking=false;
+//2 pushbuttons to trigger turn signal
+//LEFT BUTTON: D9
+int left_btn_pin=9;
+bool left_btn_val=false;
+bool turn_left=false;
+//RIGHT BUTTON D10:
+int right_btn_pin=10;
+bool right_btn_val=false;
+bool turn_right=false;
+int brightness;
 
-//keep track of velocity by adding acceleration values above threshold
-//idea was to try and sum up acceleration points when motion happens, however doesn't work since valeus don't exactly
-//add to 0, so would be able to really tell if stopped or how fast person is going.
-int velocityX=0;
-int velocityY=0;
+bool stay_on=false;
+float acc_magn;
+
+
+//var to try and adjust for error at resting place
+const float err_adj=.06;
+float rotX=0;
+float rot_sum_x=0;
+float gyro_angleX;
 
 /*
-Setup Description: Initialize Serial, set 2 leds as outuput and take pushbutton as input.
+Setup Description: Initialize Serial, set 4 led signals as outuput and take pushbutton as input.
 Setup BMI160 sensor, using SPI communication between sensor and arduino, and calibrate sensor.
 */
 void setup() {
   Serial.begin(9600); // initialize Serial communication
   while (!Serial);    // wait for the serial port to open
-  //set btn as input, leds as ouptu
-  pinMode(btn_left_pin, INPUT);
-  pinMode(btn_right_pin, INPUT);
-  pinMode(led_left_pin, OUTPUT);
-  pinMode(led_right_pin, OUTPUT);
+
+  pinMode(left_led_pin, OUTPUT);
+  pinMode(right_led_pin, OUTPUT);
+  pinMode(left_btn_pin, INPUT_PULLUP);
+  pinMode(right_btn_pin, INPUT_PULLUP);
 
 
   // initialize device
   Serial.println("Initializing IMU device...");
-  BMI160.begin(BMI160GenClass::SPI_MODE, /* SS pin# = */10);
+  BMI160.begin(BMI160GenClass::I2C_MODE, 0x68);
   uint8_t dev_id = BMI160.getDeviceID();
   Serial.print("DEVICE ID: ");
   Serial.println(dev_id, HEX);
-  //Serial.println(BMI160.setMotionDetectionThreshold());
 
   // Set the accelerometer range to 250 degrees/second
-  BMI160.setGyroRange(125);
+  //BMI160.setGyroRange(3);
   BMI160.initialize();
+  BMI160.setFullScaleGyroRange(3);
   BMI160.setAccelOffsetEnabled(true);
+  BMI160.setGyroOffsetEnabled(true);
+  BMI160.autoCalibrateGyroOffset();
   BMI160.autoCalibrateXAccelOffset(0);
   BMI160.autoCalibrateYAccelOffset(0);
-  //BMI160.autoCalibrateZAccelOffset(1);
+  //delay needed for autocalibration of offsets
+  delay(250);
   //BMI160.setAccelRate(8);
 
  // BMI160.setAccelRate(32000);
   BMI160.interruptsEnabled(CURIE_IMU_MOTION);
-  //BMI160.setDetectionThreshold(CURIE_IMU_MOTION,2);
+  BMI160.setFullScaleAccelRange(8);
+  BMI160.setAccelRate(6);
+  BMI160.setGyroRate(6);
   Serial.println(BMI160.getFullScaleAccelRange());
-  //Serial.println(BMI160.getDetectionThreshold(CURIE_IMU_MOTION));
   Serial.println("Initializing IMU device...done.");
-  timer.every(1000,timer_funct);
+  brake_timer.every(1000,brake_timer_handler);
+  sum_acc_timer.every(1000,calc_vel);
+  turn_timer.every(250,turn_timer_handler);
 }
 
 /*
@@ -121,112 +135,176 @@ Turn on led that isn't blinking and let the led that is blinking continue to bli
 */
 void loop() {
   
-  float accX,accY,accX_ma,accY_ma,accZ_ma,xy_acc, rotX_ma, rotY_ma, rotZ_ma;
-  
-  timer.tick();
+  float accX,accY, accZ;
+  brake_timer.tick();
+  sum_acc_timer.tick();
+  turn_timer.tick();
+  turn_signal_off.tick();
+
+  digitalWrite(7,!digitalRead(7));
  
 
-  //read button values
-  btn_left_val=digitalRead(btn_left_pin);
-  btn_right_val=digitalRead(btn_right_pin);
+  //read button values( ACTIVE LOW)
+  left_btn_val=digitalRead(left_btn_pin);
+  right_btn_val=digitalRead(right_btn_pin);
   
-  //if right btn pressed(active low), blink right led
-  if(btn_right_val==0){
-    //flip blink val to turn toggle essentially
-    blink_right=(!blink_right);
-    curr_millis=millis();
 
-    //pressing left signal should cancel other turn signal if pressed after
-    if(blink_left)
-      blink_left=false;
-  }
-  else{//default to just led on(half brightness, fog light brakes)
-    analogWrite(led_right_pin,125);
-  }
-  //active low
-  if(btn_left_val==0){
-    //flip blink val to turn toggle essentially
-    blink_left=(!blink_left);
-    curr_millis=millis();
+/*****************
+ * BUTTON POLLING
+ * ***************/
 
-    //pressing left signal should cancel other turn signal if pressed after
-    if(blink_right)
-      blink_right=false;
+//if left button found true, swap turn signal val for left, essentially toggling the turn signal
+  if(left_btn_val==0){
+    turn_left=(!turn_left);
+    if(turn_right==true){
+      analogWrite(right_led_pin,0);
+      turn_right=false;
+    }
+    analogWrite(left_led_pin,0);
   }
-  else{ //default to just led on(half brightness, fog light brakes)
-    analogWrite(led_left_pin, 125);
-  }
-
-  if(blink_right){
-    analogWrite(led_right_pin,(led_right_val?255:0));
-    led_right_val=(!led_right_val);
-  }
-  else if(blink_left){
-    digitalWrite(led_left_pin,(led_left_val?255:0));
-    led_left_val=(!led_left_val);
+  if(right_btn_val==0){
+    turn_right=(!turn_right);
+    if(turn_left==true){
+      digitalWrite(left_led_pin,0);
+      turn_left=false;
+    }
+    digitalWrite(right_led_pin,0); 
   }
 
 
-  //add new val to arr of ma for X Y and Z arrs
-  //update_arr(acc_maX, (convertRawAcc(BMI160.getAccelerationX())) );
+/********************************************
+ * ACC + ROT DATA RETREIVAL & MANIPULATION
+ * ******************************************/
+//get rotation for X and acceleration of each axis
+  rotX=convertRawGyro(BMI160.getRotationY());
+  //try to not account for small noise movements
+  if(rotX<.3 && rotX>-.3){
+    rotX=0;
+  }
   accX=convertRawAcc(BMI160.getAccelerationX());
-  if(accX>.05 || accX<-.05){
-    Serial.print("adding \t");
-    Serial.println(accX);
-    
-    accel_sum+=accX;
-    //Serial.println(accel_sum);
+  accX-=.3; //err adj for x when at 32 deg angle from a table
+  // if(accX<.1 && accX>-.1)
+  //   accX=0;
+  accY=convertRawAcc(BMI160.getAccelerationY());
+  accY+=.24;  //err adj for y
+  accZ=convertRawAcc(BMI160.getAccelerationZ());
+  accZ+=.36;  //err adj for z
+  /*
+   //adjusts X acceleration data error
+  if(accX>.1){
+    accX+=.3;
   }
-  //accX_ma=convertRawAcc(BMI160.getAccelerationX());
+  else if(accX<-.01){
+    accX+=.05;
+  }
+  //adjusts Y acceleration data error
+   if(accY>.1){
+    accY+=.25;
+  }
+  else if(accY<-.1){
+    accY+=.35;
+  }
+  //adjust Z acceleratoin data error
+  if(accZ>.1){
+    accZ+=.3;
+  }
+  else if(accZ<-.1){
+    accZ+=.3;
+  }
+  */
+
+  if(accX<.05 && accX>-.05)
+    accX=0;
+  if(accY<.05 && accY>-.05)
+    accY=0;
+  
+  //if(accY<)
+  
+  acc_magn=(sqrt(pow(accX,2)+pow(accY,2)+pow(accZ,2)))-8.01;
+  if(acc_magn>-.26 && acc_magn<.20){
+    acc_magn=0;
+  }
+  acc_magn*=-1;
+  
+  
 
 
- 
+  //if acceleration is not noise, sum over period to get velocity
+  if(acc_magn>.05 || acc_magn<-.05){
 
     
- 
+    velocity+=(acc_magn);
+    
+    //Serial.println(acc_magn);
+    Serial.println(velocity);
+  }
+  if(acc_magn>){
+    if(turn_left){
+      Serial.println("Turning LEFT off in 5");
+      turn_signal_off.in(5000,turn_signal_off_handler);
+      if(turn_right)
+        analogWrite(right_led_pin,LOW);
+    }
+    //else if right is blinking, leave right dim alone
+    else if(turn_right){
+      Serial.println("Turning RIGHT off in 5");
+      turn_signal_off.in(5000,turn_signal_off_handler);
+      if(turn_left)
+        analogWrite(left_led_pin,LOW);
+      
+    }
+  }
+    
+  
 
-//below if statement doesn't ever return true even if sensor is moved quickly.
-//(BMI160.motionDetected(X_AXIS,POSITIVE)) || (BMI160.motionDetected(Y_AXIS,POSITIVE))
-//print acceleration values
+/****************************************
+ * TEST PRINTING
+ * **************************************/
+  if(false){
+    Serial.println(velocity);
+//print val for the angle from x axis
+  //Serial.println(accX_angle);
+//print val for acceleration with the gravity offset added
+  //Serial.println(accX+grav_x_offset);
+
+}
+
   if(false){
     Serial.print("acc:\t");
-    Serial.print(convertRawAcc(BMI160.getAccelerationX()));
-    Serial.print("\t");
+    Serial.print(acc_magn);
+  // Serial.println(summed_acc);
+  //Serial.print("\t");
     //Serial.print(convertRawAcc(BMI160.getAccelerationY()));
-    Serial.println(accel_sum);
+    //Serial.println(velocity);
     //Serial.print(xy_acc);
-    
     Serial.println();
   }
-  //print test velocity values
+
+  //print raw accel data
   if(false){
-    Serial.print("velocity: \t");
-    Serial.print(velocityX);
-    Serial.print("\t");
-    Serial.print(velocityX);
-    Serial.println();
+    Serial.println("acceleration data:");
+    Serial.print("X:\t");
+    Serial.println(BMI160.getAccelerationX());
+    Serial.print("Y:\t");
+    Serial.println(BMI160.getAccelerationY());
+    Serial.print("Z:\t");
+    Serial.println(BMI160.getAccelerationZ());
   }
-  //print gryo rotation values
+  //gyro raw data
   if(false){
-    //display tab-separated gyro x/y/z values
-    Serial.print("rotation:\t");
-    Serial.print((convertRawGyro(BMI160.getRotationX())));
-    Serial.print("\t");
-    Serial.print((convertRawGyro(BMI160.getRotationY())));
-    Serial.print("\t");
-    Serial.print((convertRawGyro(BMI160.getRotationZ())));
-    Serial.print("\t");
+    Serial.println("gyro data:");
+    Serial.print("X:\t");
+    //Serial.println(rotX);
+     Serial.println((int)convertRawGyro(BMI160.getRotationX()));
+    // Serial.print("Y:\t");
+    // Serial.println(convertRawGyro(BMI160.getRotationY()));
+    // Serial.print("Z:\t");
+    // Serial.println(convertRawGyro(BMI160.getRotationZ()));
   }
-  //print button val stuff
-  if(false){
-    Serial.print("button val(R L): \t");
-    Serial.print(btn_right_val);
-    Serial.print("\t");
-    Serial.print(btn_left_val);
-    Serial.println();
-  }
-  delay(1);
+  delay(30);
 }
+
+
 
 float convertRawGyro(int gRaw) {
   // since we are using 250 degrees/seconds range
@@ -237,6 +315,7 @@ float convertRawGyro(int gRaw) {
 
   return g;
 }
+
 /*
 * +/- 2g           | 8192 LSB/mg
  * +/- 4g           | 4096 LSB/mg
@@ -245,27 +324,7 @@ float convertRawGyro(int gRaw) {
  * */
 float convertRawAcc(int aRaw){
   
-  return (aRaw*9.81)/16384;
-}
-
-int get_ma(int* arr){
-  int avg=0;
-  //for loops run for 20 since we know size of arrs
-  for(int i=0; i<avg_arr_size; i++){
-    avg+=arr[i];
-  }
-  //divide to get average
-  avg/=avg_arr_size;
-
-  return avg;
-}
-
-void update_arr(int* arr, int new_val){
-  //first go from the beg of arr, replacing the prev  index with the next index val
-  for(int i=0; i<avg_arr_size-1; i++){ //should only need to go to 18 index since last is replaced with new_val
-    arr[i]=arr[i+1];
-  }
-  arr[avg_arr_size-1]=new_val;
+  return (aRaw*9.81)/4096;
 }
 
 int get_xy_magn(int x, int y){
@@ -279,14 +338,144 @@ int get_xy_magn(int x, int y){
 
 }
 
-//function called when timer val reached
+
+//NOTE: cant truly get velocity, so to determine braking just use acceleration and decceleration
+//for turning off the turn signal after turn, just detect forward motion and then set a timer
+
+//function called when brake_timer val reached
 //used to get sum of acceleration measurments, reset the sum over time period, and update value
-bool timer_funct(){
-  if(false)
-    Serial.print("summed accel: \t");
-    Serial.println(accel_sum);
-  prev_accel_sum=accel_sum;
-  accel_sum=0;
-//return true to conitnue counter
+//!!NOTE add way to track previous 3-5 velocities to make sure it is truly negative or truly positive and not a one off
+bool brake_timer_handler(){
+  Serial.println(acc_magn);
+bool toggle_led=false;
+  //true if velocity is neg,false if vel is pos
+  //true if the toggle_rate reaches max falsh rate, false otherwise
+  bool full_brake=false;
+  
+  //if velocity is decreasing, toggle leds and increase blink rate
+  if(acc_magn<-.3){
+    toggle_led=true;
+    //if toggle rate is fast enough, just brake and dont descrease value anymore
+    if(toggle_rate<=0){
+      full_brake=true;
+      led_brightness=255;
+    }
+    else{
+      full_brake=false;
+      toggle_rate-=50;
+      led_brightness+=20;
+    }
+  }
+  //if there was deacceleration detected but now no acceleration. turn brake light on
+  else if(toggle_led==true && (acc_magn==0)){
+    Serial.println("braking!");
+    analogWrite(left_led_pin,255);
+    analogWrite(right_led_pin,255);
+  }
+  //else if moving forward, pos vel, turn off blink and all leds. And reset blink rate
+  else if(acc_magn>.2){
+    if(toggle_rate<=50){
+      stay_on=false;
+    }
+    toggle_led=false;
+    full_brake=false;
+    //led_brightness=100;
+    toggle_rate=500;
+    //add check for if turn signal is on for right or left
+    //if left is blining, leave dim alone
+     if(turn_left){
+      analogWrite(right_led_pin,LOW);
+    }
+    //else if right is blinking, leave right dim alone
+    else if(turn_right){
+      analogWrite(left_led_pin,LOW);
+    }
+    //else turn all leds off
+    else{
+      analogWrite(left_led_pin,LOW);
+      analogWrite(right_led_pin,LOW);
+    }
+  }
+
+  if(toggle_led){
+    //again check for turn signals, if either is on, leave respective light along
+    if(turn_left){
+      if(brightness!=0)
+        brightness=0;
+      else
+        brightness=led_brightness;
+      analogWrite(right_led_pin,brightness);
+    }
+    else if(turn_right){
+      if(brightness!=0)
+        brightness=0;
+      else
+        brightness=led_brightness;
+      analogWrite(left_led_pin,brightness);
+    }
+    else{
+      if(brightness==0)
+        brightness=led_brightness;
+      else
+        brightness=0;
+      //analogWrite(left_led_pin,LOW);
+      analogWrite(left_led_pin,brightness);
+      analogWrite(right_led_pin, brightness);
+    }
+  }
+  if(full_brake){
+    led_brightness=0;
+    brightness=0;
+    //add check for if turn signal is on, if so then continue blinking
+    if(turn_left)
+      analogWrite(right_led_pin,255);
+    else if(turn_right)
+      analogWrite(left_led_pin,255);
+    else{
+      analogWrite(left_led_pin,255);
+      analogWrite(right_led_pin,255);
+    }
+  }
+  
+  
+  //schedule next time to call and update leds
+  sum_acc_timer.in(toggle_rate,brake_timer_handler);
+  
+//return false to stop timer, but since we created a new timer "time" above, it will be called in toggle rate amt of time
+  return false;
+}
+
+bool calc_vel(){
+ // Serial.println("in toggle handler");
+  displacement+=velocity;
+  prev_velocity=velocity;
+  velocity=0;
   return true;
+}
+
+//potentially add it so if braking, turn signal also turns on the bright led
+bool turn_timer_handler(){
+  //if turn left or turn right are true, then toggle respective led
+  if(turn_left){
+    digitalWrite(left_led_pin,!digitalRead(left_led_pin));
+  }
+  else if(turn_right){
+    digitalWrite(right_led_pin,!digitalRead(right_led_pin));
+  }
+
+  return true;
+}
+
+bool turn_signal_off_handler(){
+  if(turn_left==true){
+    Serial.println("Left turn signal off");
+    turn_left=false;
+    digitalWrite(left_led_pin,LOW);
+  }
+  if(turn_right==true){
+    Serial.println("RIGHT turn signal off");
+    turn_right=false;
+    digitalWrite(right_led_pin,LOW);
+  }
+  return false;
 }
